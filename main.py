@@ -1,284 +1,192 @@
-from os import system as command
 import pygame
-from math import sqrt
-from time import time
+from time import time, sleep, gmtime
+from threading import Thread, Lock, active_count
+from vector_class import Vector3D as Vec
+from math import sqrt, tan
+import settings
+from os import system
 
-#region init
+#region shapes
+class Sphere():
+    def __init__(self, x, y, z, r, colour=[255, 255, 255]):
+        self.pos = Vec(x, y, z)
+        self.r = r
+        self.colour = colour
+    
+    def collide_point(self, point):
+        return self.pos.dist(point) <= self.r
 
-pygame.init()
+class Box():
+    def __init__(self, x, y, z, w, h, d, colour=[255, 255, 255]):
+        self.pos = Vec(x, y, z)
+        self.size = Vec(w, h, d)
+        self.colour = colour
+    
+    def collide_point(self, point):
+            return  point.x >= self.pos.x and point.x <= self.pos.x + self.size.x and\
+                    point.y >= self.pos.y and point.y <= self.pos.y + self.size.y and\
+                    point.z >= self.pos.z and point.z <= self.pos.z + self.size.z
 
 #endregion
 
-#region classes
-
-class Vector():
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
-
-    def get_mag(self):
-        return sqrt(self.x**2 + self.y**2 + self.z**2)
-
-    def normalise(self):
-        mag = self.get_mag()
-
-        self.x /= mag
-        self.y /= mag
-        self.z /= mag
-
-    def add(self, vector):
-        self.x += vector.x
-        self.y += vector.y
-        self.z += vector.z
-
-    def __sub__(self, vector):
-        return Vector(vector.x - self.x, vector.y - self.y, vector.z - self.z)
-
-    def copy(self):
-        return Vector(self.x, self.y, self.z)
+#region path tracing
 
 class Ray():
-    def __init__(self, pos, heading):
-        self.live = True
-        self.init_pos = pos.copy()
-        self.pos = pos
-        self.heading = heading
-        self.heading.normalise()
-        self.reflected = 0
+    def __init__(self, x, y, z):
+        self.pos = Vec(x, y, z)
         self.colour = [0, 0, 0]
-        self.colours = 1
-    
-    def add_colour(self, colour):
-        self.colours += 1
+        self.bounces = 0
+        self.pixel = (x, y)
 
-        r, g, b = self.colour
-
-        r += colour[0]
-        g += colour[1]
-        b += colour[2]
-
-        if r < 0 : r = 0
-        if g < 0 : g = 0
-        if b < 0 : b = 0
-        if r > 255 : r = 255
-        if g > 255 : g = 255
-        if b > 255 : b = 255
-
-        self.colour = [r, g, b]
-    
-    def get_initial_pos(self):
-        return f'{self.init_pos.x}:{self.init_pos.y}'
+        self.heading = self.pos - Vec(settings.rendering_canvas_size[0]/2, settings.rendering_canvas_size[1]/2, -focal_length)
+        self.heading.normalise()
 
     def get_colour(self):
         r, g, b = self.colour
 
-        r /= self.colours
-        g /= self.colours
-        b /= self.colours
+        r /= self.bounces ; g /= self.bounces ; b /= self.bounces
+
+        if r > 255 : r = 255
+        if g > 255 : g = 255
+        if b > 255 : b = 255
 
         return [r, g, b]
 
-    def disable(self):
-        self.live = False
+    def add_colour(self, colour):
+        r, g, b = colour
 
-class Sphere():
-    def __init__(self, x, y, z, radius, colour=[255, 255, 255]):
-        self.pos = Vector(x, y, z)
-        self.radius = radius
-        self.colour = colour
-    
-    def check_collide_point(self, point):
-        distance = (point.pos.x - self.pos.x)**2 + (point.pos.y - self.pos.y)**2 + (point.pos.z - self.pos.z)**2
+        self.colour[0] += r ; self.colour[1] += g ; self.colour[2] += b
+        self.bounces += 1
 
-        if distance < self.radius**2 : return True
-        else : return False
+#load and create shapes
+shapes = []
+for i in settings.shapes:
+    name = i.split(' ')[0]
 
-class Cube():
-    def __init__(self, x, y, z, w, h, d, colour=[255, 255, 255]):
-        self.pos = Vector(x, y, z)
-        self.w = w
-        self.h = h
-        self.d = d
-        self.colour = colour
+    if name.lower() == 'sphere':
+        _, x, y, z, rad, r, g, b = i.split(' ')
+        shapes.append(Sphere(float(x), float(y), float(z), float(rad), colour=[float(r), float(g), float(b)]))
+    elif name.lower() == 'box':
+        _, x, y, z, w, h, d, r, g, b = i.split(' ')
+        shapes.append(Box(float(x), float(y), float(z), float(w), float(h), float(d), colour=[float(r), float(g), float(b)]))
 
-    def check_collide_point(self, point):
-        x = point.pos.x > self.pos.x and point.pos.x < self.pos.x + self.w
-        y = point.pos.y > self.pos.y and point.pos.y < self.pos.y + self.h
-        z = point.pos.z > self.pos.z and point.pos.z < self.pos.z + self.d
+rendering_canvas = pygame.Surface(settings.rendering_canvas_size)
 
-        return x and y and z
+report = ['[Thread 0 - ?/? | ?%' for _ in range(settings.threads_to_open)]
 
-#endregion
+def map_to_range(value, leftMin, leftMax, rightMin, rightMax):
+    # Figure out how 'wide' each range is
+    leftSpan = leftMax - leftMin
+    rightSpan = rightMax - rightMin
 
-#region functions
+    # Convert the left range into a 0-1 range (float)
+    valueScaled = float(value - leftMin) / float(leftSpan)
 
-def clear():
-    command('cls')
+    # Convert the 0-1 range into a value in the right range.
+    return rightMin + (valueScaled * rightSpan)
 
-#endregion
+def chunk_renderer(id, rays):
+    total_rays_at_start = len(rays)
 
-#region global variables
+    while len(rays) > 0:
+        temp_ray_holder = []
 
-objects = []
+        for ray in rays:
+            ray.pos.add(ray.heading)
 
-rendering_surface_w = 200
-rendering_surface_h = 200
+            next_iter = True
 
-rendering_distance = 100
+            if ray.pos.dist([ray.pixel[0], ray.pixel[1], 0]) > settings.render_distance:
 
-world_box = Cube(0, 0, -1, rendering_surface_w, rendering_surface_h, rendering_distance)
+                if ray.bounces == 0:
+                    ray.add_colour(settings.sky_colour)
 
-reflection_count = 1
+                rendering_canvas.set_at(ray.pixel, ray.get_colour())
 
-sun_pos = Sphere((rendering_surface_w/2) + rendering_surface_w/5, 0, (rendering_distance/2) - rendering_surface_w/5, 10, [0, 0, 0])
+                next_iter = False
+        
+            for shape in shapes:
+                if shape.collide_point(ray.pos):
+                    ray.add_colour(shape.colour)
 
-preview_surface = pygame.Surface((500, 500))
-rendering_surface = pygame.Surface((rendering_surface_w, rendering_surface_h))
-rendering_surface.fill(0)
+                    if ray.bounces == settings.ray_reflections + 1:
+                        rendering_canvas.set_at(ray.pixel, ray.get_colour())
+                        next_iter = False
+                        break
+                    else:
+                        ray.heading = ray.pos - shape.pos
+                        ray.heading.normalise()
+        
+            if next_iter:
+                temp_ray_holder.append(ray)
+        
+        rays = temp_ray_holder
+        current_total_rays = len(rays)
 
+        report[id-1] = f'[Thread {id} - {current_total_rays}/{total_rays_at_start} | {int(map_to_range(current_total_rays, 0, total_rays_at_start, 100, 0))}%'
+
+focal_length = (0.5 * settings.rendering_canvas_size[0]) * tan(settings.fov / 2)
 rays = []
+id = 1
+for y in range(settings.rendering_canvas_size[0]):
+    for x in range(settings.rendering_canvas_size[1]):
+        rays.append(Ray(x, y, 0))
 
-completed_rays = 0
+        if len(rays) == int((settings.rendering_canvas_size[0] * settings.rendering_canvas_size[1]) / settings.threads_to_open):
+            thread = Thread(target=chunk_renderer, args=(id, rays))
+            thread.start()
+            rays = []
+            id += 1
 
+if len(rays) != 0:
+    thread = Thread(target=chunk_renderer, args=(id+1, rays))
+    thread.start()
 #endregion
 
-# render a simple sphere, again
-def output_status():
-    clear()
-    print('{:,}/{:,}    |   {:.2f}%'.format(completed_rays, rendering_surface_w*rendering_surface_h, (completed_rays / (rendering_surface_w*rendering_surface_h)) * 100))
+def pretty_time(gm_time):
+    hr = str(gm_time.tm_hour)
+    mi = str(gm_time.tm_min)
+    se = str(gm_time.tm_sec)
 
-def create_rays():
-    """Creates an array of rays"""
-    global rays
+    if len(hr) == 1 : hr = '0' + hr
+    if len(mi) == 1 : mi = '0' + mi
+    if len(se) == 1 : se = '0' + se
 
-    for x in range(rendering_surface_w):
-        for y in range(rendering_surface_h):
-            pos = Vector(x, y, 0)
-            heading = Vector(0, 0.1, 1)
-            rays.append(Ray(pos, heading))
+    print(f'Time Elapsed: {hr}:{mi}:{se}')
 
-def render():
-    i = 0
-    for ray in rays:
-        # check if ray is still in the world box
-        if not world_box.check_collide_point(ray):
-            x, y = ray.init_pos.x, ray.init_pos.y
-            rendering_surface.set_at((x, y), ray.get_colour())
+system('cls')
+start_time = time()
+while active_count() > 1:
+    system('cls')
 
-            ray.disable()
+    for rep in sorted(report, key=lambda elem : int(elem.split(' ')[1])):
+        print(rep)
 
-        # check if ray is completed it's life cycle
-        if not ray.live:
-            continue
-    
-        i += 1
+    elapsed = gmtime(time() - start_time)
+    pretty_time(elapsed)
 
-        # move ray
-        ray.pos.add(ray.heading)
+    sleep(0.5)
+end_time = gmtime(time() - start_time)
+system('cls')
+pretty_time(end_time)
 
-        # check if ray has collided
-        shape_collided_with = None
-        for shape in objects:
-            if shape.check_collide_point(ray):
-                shape_collided_with = shape
-                break
+#region pygame
+pygame.init()
+screen = pygame.display.set_mode(settings.screen_size)
+screen.fill([255, 255, 255])
+pygame.display.set_icon(screen)
+clock, fps = pygame.time.Clock(), 60
 
-        if shape_collided_with is None:
-            continue
+rendering_canvas = pygame.transform.scale(rendering_canvas, settings.screen_size)
 
-        # add collided colour
-        ray.add_colour(shape_collided_with.colour)
+while True:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit
+            quit()
 
-        # check if the ray requires reflection
-        if ray.reflected < reflection_count:
-            heading = shape.pos - ray.pos
-            heading.normalise()
-            ray.heading = heading
+    screen.blit(rendering_canvas, (0, 0))
 
-            ray.reflected += 1
-            continue
-    
-        # check if can see light
-        heading = ray.pos - sun_pos.pos
-        heading.normalise()
-
-        while True:
-            ray.pos.add(heading)
-
-            if sun_pos.check_collide_point(ray):
-                ray.add_colour(sun_pos.colour)
-                break
-
-            finish = False
-            for shape in objects:
-                if shape.check_collide_point(ray):
-                    r, g, b = sun_pos.colour
-                    ray.add_colour([-r, -g, -b])
-                    finish = True
-                    break
-            
-            if finish : break
-    
-        # draw rays' colour to the screen when all reflections are done
-        x, y = ray.init_pos.x, ray.init_pos.y
-        rendering_surface.set_at((x, y), ray.get_colour())
-
-        ray.disable()
-
-    return i
-
-def view_render():
-    global rendering_surface
-    size = (500, 550)
-
-    #region init
-    screen = pygame.display.set_mode(size)
-    screen.fill([255, 255, 255])
-    pygame.display.set_icon(screen)
-    pygame.display.set_caption('')
-    clock, fps = pygame.time.Clock(), 30
-    #endregion
-
-    rendering_surface = pygame.transform.scale(rendering_surface, size)
-
-    pygame.image.save(rendering_surface, 'image.png')
-
-    while True:
-        #region events
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                exit()
-        #endregion
-
-        screen.blit(rendering_surface, (0, 0))
-
-        pygame.display.update()
-        clock.tick(fps)
-
-objects = [
-    Cube(-10, rendering_surface_h-2, 0, rendering_surface_w+20, 1, rendering_distance, colour=[60, 30, 0]),
-    Sphere((rendering_surface_w/2)-10, rendering_surface_h/2, 75, 10, colour=[255, 0, 0]),
-    Sphere((rendering_surface_w/2)+15, rendering_surface_h/2, 75, 10, colour=[0, 255, 0]),
-    Sphere((rendering_surface_w/2)+7, (rendering_surface_h/2) + 10, 100, 10, colour=[0, 0, 255]),
-]
-
-create_rays()
-
-i = 100000
-mark = time()
-while i != 0:
-    i = render()
-
-    clear()
-    print(i)
-print('Elapsed', mark - time())
-
-view_render()
-
-
-
-
-
-
+    pygame.display.update()
+    clock.tick(fps)
+#endregion
