@@ -1,5 +1,5 @@
-# Ray-Caster
-A Ray Casting engine I wrote using Python 3.8 and Pygame 2.
+# Path-Tracer
+A Path Tracing engine I wrote using Python 3.8 and Pygame 2.
 
 It's still a very much work in progress as I still want to do the following:
 <li> Clean up the structure of my code <strong><- In Progress</strong>
