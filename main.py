@@ -1,78 +1,39 @@
+from vector_class import Vector2D, Vector3D
 import pygame
-from time import time, sleep, gmtime
-from threading import Thread, Lock, active_count
-from vector_class import Vector3D as Vec
-from math import sqrt, tan
+from time import time, gmtime, sleep
+from threading import Thread, active_count
 import settings
-from os import system
+from os import system ; system('cls')
+from math import tan
+from random import randint
 
-#region shapes
-class Sphere():
-    def __init__(self, x, y, z, r, colour=[255, 255, 255]):
-        self.pos = Vec(x, y, z)
-        self.r = r
-        self.colour = colour
-    
-    def collide_point(self, point):
-        return self.pos.dist(point) <= self.r
+#region initialise variables
+print('[!] Loading...')
+print('[!] Creating Variables')
 
-class Box():
-    def __init__(self, x, y, z, w, h, d, colour=[255, 255, 255]):
-        self.pos = Vec(x, y, z)
-        self.size = Vec(w, h, d)
-        self.colour = colour
-    
-    def collide_point(self, point):
-            return  point.x >= self.pos.x and point.x <= self.pos.x + self.size.x and\
-                    point.y >= self.pos.y and point.y <= self.pos.y + self.size.y and\
-                    point.z >= self.pos.z and point.z <= self.pos.z + self.size.z
+focal_length = (0.5 * settings.rendering_canvas_size[0]) * tan(settings.fov / 2)
+rendering_canvas = pygame.Surface(settings.rendering_canvas_size) ; rendering_canvas.fill(settings.sky_colour)
 
+report = [0 for _ in range(settings.threads_to_open)]
+
+running_average_eta = []
 #endregion
 
-#region path tracing
+#region Functions
+print('[!] Creating Functions')
 
-class Ray():
-    def __init__(self, x, y, z):
-        self.pos = Vec(x, y, z)
-        self.colour = [0, 0, 0]
-        self.bounces = 0
-        self.pixel = (x, y)
+clear = lambda : system('cls')
 
-        self.heading = self.pos - Vec(settings.rendering_canvas_size[0]/2, settings.rendering_canvas_size[1]/2, -focal_length)
-        self.heading.normalise()
+def pretty_time(gm_time):
+    hr = str(gm_time.tm_hour)
+    mi = str(gm_time.tm_min)
+    se = str(gm_time.tm_sec)
 
-    def get_colour(self):
-        r, g, b = self.colour
+    if len(hr) == 1 : hr = '0' + hr
+    if len(mi) == 1 : mi = '0' + mi
+    if len(se) == 1 : se = '0' + se
 
-        r /= self.bounces ; g /= self.bounces ; b /= self.bounces
-
-        if r > 255 : r = 255
-        if g > 255 : g = 255
-        if b > 255 : b = 255
-
-        return [r, g, b]
-
-    def add_colour(self, colour):
-        r, g, b = colour
-
-        self.colour[0] += r ; self.colour[1] += g ; self.colour[2] += b
-        self.bounces += 1
-
-#load and create shapes
-shapes = []
-for i in settings.shapes:
-    name = i.split(' ')[0]
-
-    if name.lower() == 'sphere':
-        _, x, y, z, rad, r, g, b = i.split(' ')
-        shapes.append(Sphere(float(x), float(y), float(z), float(rad), colour=[float(r), float(g), float(b)]))
-    elif name.lower() == 'box':
-        _, x, y, z, w, h, d, r, g, b = i.split(' ')
-        shapes.append(Box(float(x), float(y), float(z), float(w), float(h), float(d), colour=[float(r), float(g), float(b)]))
-
-rendering_canvas = pygame.Surface(settings.rendering_canvas_size)
-
-report = ['[Thread 0 - ?/? | ?%' for _ in range(settings.threads_to_open)]
+    return f'{hr}:{mi}:{se}'
 
 def map_to_range(value, leftMin, leftMax, rightMin, rightMax):
     # Figure out how 'wide' each range is
@@ -85,90 +46,191 @@ def map_to_range(value, leftMin, leftMax, rightMin, rightMax):
     # Convert the 0-1 range into a value in the right range.
     return rightMin + (valueScaled * rightSpan)
 
-def chunk_renderer(id, rays):
-    total_rays_at_start = len(rays)
+def draw_pixel_to_canvas(pos, colour):
+    rendering_canvas.set_at(pos, colour)
 
-    while len(rays) > 0:
-        temp_ray_holder = []
+def chunk_renderer(id, pixels):
+    global report
 
-        for ray in rays:
-            ray.pos.add(ray.heading)
+    done = 0 ; total = len(pixels)
 
-            next_iter = True
+    while len(pixels) > 0:
+        temp = []
+        for pixel in pixels:
+            if pixel.step():
+                done += 1
+            else:
+                temp.append(pixel)
 
-            if ray.pos.dist([ray.pixel[0], ray.pixel[1], 0]) > settings.render_distance:
+        pixels = temp
+        report[id-1] = map_to_range(done, 0, total, 0, 100)
 
-                if ray.bounces == 0:
-                    ray.add_colour(settings.sky_colour)
+def await_finish():
+    system('cls')
+    start_time = time()
+    while (active_threads := active_count()) > 1:
+        system('cls')
 
-                rendering_canvas.set_at(ray.pixel, ray.get_colour())
+        print(f'Complete: {round(sum(report) / len(report), 3)}%')
+        print(f'Active Threads: {active_threads-1}/{settings.threads_to_open}')
 
-                next_iter = False
+        elapsed = gmtime(time() - start_time)
+        print('Elapsed: ' + pretty_time(elapsed))
+
+        seconds_per_percent = round(sum(report) / len(report), 3) / (time() - start_time)
+        eta_in_seconds = 100 * seconds_per_percent
+        running_average_eta.append(eta_in_seconds)
+        print('Average ETA: ' + pretty_time(gmtime(sum(running_average_eta) / len(running_average_eta))))
+
+        sleep(0.8)
+
+    print(f'Complete: {sum(report) / len(report)}%')
+    end_time = gmtime(time() - start_time)
+    system('cls')
+    print('Elapsed: ' + pretty_time(end_time))
+
+#endregion
+
+#region shapes
+print('[!] Creating Shapes')
+
+class Sphere():
+    def __init__(self, x, y, z, r, colour=[255, 255, 255]):
+        self.pos = Vector3D(x, y, z)
+        self.r = r
+        self.colour = colour
+    
+    def collide_point(self, point):
+        return self.pos.dist(point) <= self.r
+
+class Box():
+    def __init__(self, x, y, z, w, h, d, colour=[255, 255, 255]):
+        self.pos = Vector3D(x, y, z)
+        self.size = Vector3D(w, h, d)
+        self.colour = colour
+    
+    def collide_point(self, point):
+            return  point.x >= self.pos.x - self.size.x/2 and point.x <= self.pos.x + self.size.x/2 and\
+                    point.y >= self.pos.y - self.size.y/2 and point.y <= self.pos.y + self.size.y/2 and\
+                    point.z >= self.pos.z - self.size.z/2 and point.z <= self.pos.z + self.size.z/2
+
+#endregion
+
+#region path tracing classes
+print('[!] Creating Classes')
+
+class Ray():
+    def __init__(self, x, y, z):
+        self.pos = Vector3D(x, y, z)
+        self.bounces = 0
+
+        self.heading = self.pos - Vector3D(settings.rendering_canvas_size[0]/2, settings.rendering_canvas_size[1]/2, -focal_length)
+        self.heading.normalise()
+
+class Pixel():
+    def __init__(self, x, y):
+        self.pos = Vector2D(x, y)
+        self.colour = [0, 0, 0] ; self.colour_additions = 0
+
+        self.raw_colour_ray = Ray(x, y, 0) ; self.raw_ray_finished = False
+    
+    def check_shape_collisions(self, ray):
+        for shape in shapes:
+            if shape.collide_point(ray.pos):
+                return shape
         
-            for shape in shapes:
-                if shape.collide_point(ray.pos):
-                    ray.add_colour(shape.colour)
+        return False
 
-                    if ray.bounces == settings.ray_reflections + 1:
-                        rendering_canvas.set_at(ray.pixel, ray.get_colour())
-                        next_iter = False
-                        break
-                    else:
-                        ray.heading = ray.pos - shape.pos
-                        ray.heading.normalise()
+    def add_colour(self, colour):
+        self.colour[0] += colour[0]
+        self.colour[1] += colour[1]
+        self.colour[2] += colour[2]
+
+        self.colour_additions += 1
+
+    def get_colour(self):
+        if sum(self.colour) == 0:
+            return settings.sky_colour
         
-            if next_iter:
-                temp_ray_holder.append(ray)
-        
-        rays = temp_ray_holder
-        current_total_rays = len(rays)
+        if self.colour_additions == 0:
+            return self.colour
 
-        report[id-1] = f'[Thread {id} - {current_total_rays}/{total_rays_at_start} | {int(map_to_range(current_total_rays, 0, total_rays_at_start, 100, 0))}%'
+        return [self.colour[0] / self.colour_additions, self.colour[1] / self.colour_additions, self.colour[2] / self.colour_additions]
 
-focal_length = (0.5 * settings.rendering_canvas_size[0]) * tan(settings.fov / 2)
-rays = []
+    def advance_raw_ray(self):
+        if self.raw_ray_finished:
+            return
+
+        # move ray
+        self.raw_colour_ray.pos.add(self.raw_colour_ray.heading)
+
+        # out of render distance
+        if self.raw_colour_ray.pos.dist([self.pos.x, self.pos.y, 0]) >= settings.render_distance:
+            self.raw_ray_finished = True
+
+        # check for collisions
+        if (result := self.check_shape_collisions(self.raw_colour_ray)) != False:
+            self.add_colour(result.colour)
+
+            if self.raw_colour_ray.bounces >= settings.ray_reflections:
+                self.raw_ray_finished = True
+            else:
+                self.raw_colour_ray.heading = self.raw_colour_ray.pos - result.pos
+                self.raw_colour_ray.bounces += 1
+
+        if self.raw_ray_finished:
+            draw_pixel_to_canvas(self.pos.get(), self.get_colour())
+
+    def step(self):
+        self.advance_raw_ray()
+
+        return self.raw_ray_finished
+#endregion
+
+#region path trace
+
+#load and create shapes
+print('[!] Loading Shapes')
+
+shapes = []
+for i in settings.shapes:
+    name = i.split(' ')[0]
+
+    if name.lower() == 'sphere':
+        _, x, y, z, rad, r, g, b = i.split(' ')
+        if r == g == b == 'r' : r = randint(0, 150) ; g = randint(0, 150) ; b = randint(0, 150)
+
+        shapes.append(Sphere(float(x), float(y), float(z), float(rad), colour=[float(r), float(g), float(b)]))
+    elif name.lower() == 'box':
+        _, x, y, z, w, h, d, r, g, b = i.split(' ')
+        if r == g == b == 'r' : r = randint(0, 150) ; g = randint(0, 150) ; b = randint(0, 150)
+
+        shapes.append(Box(float(x), float(y), float(z), float(w), float(h), float(d), colour=[float(r), float(g), float(b)]))
+
+# create pixel threads
+print('[!] Creating Threads')
+pixels = []
 id = 1
 for y in range(settings.rendering_canvas_size[0]):
     for x in range(settings.rendering_canvas_size[1]):
-        rays.append(Ray(x, y, 0))
+        pixels.append(Pixel(x, y))
 
-        if len(rays) == int((settings.rendering_canvas_size[0] * settings.rendering_canvas_size[1]) / settings.threads_to_open):
-            thread = Thread(target=chunk_renderer, args=(id, rays))
+        if len(pixels) == int((settings.rendering_canvas_size[0] * settings.rendering_canvas_size[1]) / settings.threads_to_open):
+            thread = Thread(target=chunk_renderer, args=(id, pixels))
             thread.start()
-            rays = []
+            pixels = []
             id += 1
-
-if len(rays) != 0:
-    thread = Thread(target=chunk_renderer, args=(id+1, rays))
+if len(pixels) != 0:
+    thread = Thread(target=chunk_renderer, args=(id+1, pixels))
     thread.start()
+
+print(f'[!] Started {active_count()-1} Threads')
+
+clear()
+print('[!] Loading Done...')
+await_finish()
+
 #endregion
-
-def pretty_time(gm_time):
-    hr = str(gm_time.tm_hour)
-    mi = str(gm_time.tm_min)
-    se = str(gm_time.tm_sec)
-
-    if len(hr) == 1 : hr = '0' + hr
-    if len(mi) == 1 : mi = '0' + mi
-    if len(se) == 1 : se = '0' + se
-
-    print(f'Time Elapsed: {hr}:{mi}:{se}')
-
-system('cls')
-start_time = time()
-while active_count() > 1:
-    system('cls')
-
-    for rep in sorted(report, key=lambda elem : int(elem.split(' ')[1])):
-        print(rep)
-
-    elapsed = gmtime(time() - start_time)
-    pretty_time(elapsed)
-
-    sleep(0.5)
-end_time = gmtime(time() - start_time)
-system('cls')
-pretty_time(end_time)
 
 #region pygame
 pygame.init()
@@ -178,11 +240,12 @@ pygame.display.set_icon(screen)
 clock, fps = pygame.time.Clock(), 60
 
 rendering_canvas = pygame.transform.scale(rendering_canvas, settings.screen_size)
+pygame.image.save(rendering_canvas, 'render_result.png')
 
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            pygame.quit
+            pygame.quit()
             quit()
 
     screen.blit(rendering_canvas, (0, 0))
@@ -190,3 +253,6 @@ while True:
     pygame.display.update()
     clock.tick(fps)
 #endregion
+
+
+
