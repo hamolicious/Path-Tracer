@@ -6,6 +6,7 @@ import settings
 from os import system ; system('cls')
 from math import tan
 from random import randint
+import playsound
 
 #region initialise variables
 print('[!] Loading...')
@@ -15,8 +16,6 @@ focal_length = (0.5 * settings.rendering_canvas_size[0]) * tan(settings.fov / 2)
 rendering_canvas = pygame.Surface(settings.rendering_canvas_size) ; rendering_canvas.fill(settings.sky_colour)
 
 report = [0 for _ in range(settings.threads_to_open)]
-
-running_average_eta = []
 #endregion
 
 #region Functions
@@ -74,13 +73,12 @@ def await_finish():
         print(f'Complete: {round(sum(report) / len(report), 3)}%')
         print(f'Active Threads: {active_threads-1}/{settings.threads_to_open}')
 
-        elapsed = gmtime(time() - start_time)
-        print('Elapsed: ' + pretty_time(elapsed))
+        elapsed = time() - start_time
+        print('Elapsed: ' + pretty_time(gmtime(elapsed)))
 
-        seconds_per_percent = round(sum(report) / len(report), 3) / (time() - start_time)
+        seconds_per_percent = round(sum(report) / len(report), 3) / elapsed
         eta_in_seconds = 100 * seconds_per_percent
-        running_average_eta.append(eta_in_seconds)
-        print('Average ETA: ' + pretty_time(gmtime(sum(running_average_eta) / len(running_average_eta))))
+        print('Average ETA: ' + pretty_time(gmtime(eta_in_seconds)))
 
         sleep(0.8)
 
@@ -119,6 +117,10 @@ class Box():
 #region path tracing classes
 print('[!] Creating Classes')
 
+class Light():
+    def __init__(self, x, y, z):
+        self.pos = Vector3D(x, y, z)
+
 class Ray():
     def __init__(self, x, y, z):
         self.pos = Vector3D(x, y, z)
@@ -133,6 +135,7 @@ class Pixel():
         self.colour = [0, 0, 0] ; self.colour_additions = 0
 
         self.raw_colour_ray = Ray(x, y, 0) ; self.raw_ray_finished = False
+        self.light_rays = [] ; self.light_ray_finished = False
     
     def check_shape_collisions(self, ray):
         for shape in shapes:
@@ -154,8 +157,16 @@ class Pixel():
         
         if self.colour_additions == 0:
             return self.colour
+        
+        if self.colour[0] < 0 : self.colour[0] = 0
+        if self.colour[1] < 0 : self.colour[1] = 0
+        if self.colour[2] < 0 : self.colour[2] = 0
 
         return [self.colour[0] / self.colour_additions, self.colour[1] / self.colour_additions, self.colour[2] / self.colour_additions]
+
+    def deflect_ray_from_shape(self, ray, shape):
+        ray.heading = (ray.pos - shape.pos) + ray.heading
+        ray.bounces += 1
 
     def advance_raw_ray(self):
         if self.raw_ray_finished:
@@ -172,19 +183,54 @@ class Pixel():
         if (result := self.check_shape_collisions(self.raw_colour_ray)) != False:
             self.add_colour(result.colour)
 
+            # save last collision
+            light_ray = Ray(self.raw_colour_ray.pos.x, self.raw_colour_ray.pos.y, self.raw_colour_ray.pos.z)
+            light_ray.heading = light.pos - self.raw_colour_ray.pos
+            light_ray.heading.normalise()
+            distance_from_light = light_ray.pos.dist(light.pos)
+            self.light_rays.append([light_ray, False, distance_from_light])
+
             if self.raw_colour_ray.bounces >= settings.ray_reflections:
                 self.raw_ray_finished = True
             else:
-                self.raw_colour_ray.heading = self.raw_colour_ray.pos - result.pos
-                self.raw_colour_ray.bounces += 1
+                self.deflect_ray_from_shape(self.raw_colour_ray, result)
 
-        if self.raw_ray_finished:
-            draw_pixel_to_canvas(self.pos.get(), self.get_colour())
+    def advance_light_ray(self):
+        temp = []
+        for ray in self.light_rays:
+            ray[0].pos.add(ray[0].heading)
+
+            for shape in shapes:
+                if shape.collide_point(ray[0].pos):
+                    ray[1] = True
+                    break
+
+            if ray[0].pos.dist(light.pos) < 5:
+                ray[1] = True
+
+            if ray[1]:
+                val = map_to_range(ray[0].pos.dist(light.pos), 0, ray[2], settings.light_strength, -settings.light_strength/2)
+                self.add_colour([val, val, val])
+            else:
+                temp.append(ray)
+        
+        self.light_rays = temp
+        if len(self.light_rays) == 0:
+            self.light_ray_finished = True
 
     def step(self):
-        self.advance_raw_ray()
+        if not self.raw_ray_finished:
+            self.advance_raw_ray()
+        elif len(self.light_rays) > 0:
+            self.advance_light_ray()
+        else:
+            self.light_ray_finished = True
 
-        return self.raw_ray_finished
+        if self.raw_ray_finished and self.light_ray_finished:
+            draw_pixel_to_canvas(self.pos.get(), self.get_colour())
+            return True
+        else:
+            return False
 #endregion
 
 #region path trace
@@ -207,6 +253,11 @@ for i in settings.shapes:
 
         shapes.append(Box(float(x), float(y), float(z), float(w), float(h), float(d), colour=[float(r), float(g), float(b)]))
 
+# load and create lights
+print('[!] Loading Light')
+x, y, z = settings.light.split(' ')
+light = Light(float(x), float(y), float(z))
+
 # create pixel threads
 print('[!] Creating Threads')
 pixels = []
@@ -219,6 +270,8 @@ for y in range(settings.rendering_canvas_size[0]):
             thread = Thread(target=chunk_renderer, args=(id, pixels))
             thread.start()
             pixels = []
+
+            print(f' |___ Created {id}/{settings.threads_to_open} Threads')            
             id += 1
 if len(pixels) != 0:
     thread = Thread(target=chunk_renderer, args=(id+1, pixels))
@@ -229,6 +282,9 @@ print(f'[!] Started {active_count()-1} Threads')
 clear()
 print('[!] Loading Done...')
 await_finish()
+
+if settings.play_sound_when_done:
+    playsound.playsound('Data/done_sound.mp3', block=False)
 
 #endregion
 
