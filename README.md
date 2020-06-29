@@ -8,4 +8,4 @@ It's still a very much work in progress as I still want to do the following:
 <li> Fix reflections (formula for reflection direction is wrong)
 <br>
 
-<img src="image.png">
+<img src="render_result.png">
